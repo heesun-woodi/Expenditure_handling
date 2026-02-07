@@ -1,0 +1,16 @@
+.env
+credentials/
+*.json
+!.env.example
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+logs/
+/tmp/
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+.DS_Store
