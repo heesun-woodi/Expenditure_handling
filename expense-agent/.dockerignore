@@ -1,0 +1,34 @@
+# Credentials & secrets
+.env
+credentials/
+
+# Logs & temp files
+logs/
+data/
+/tmp/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Test files
+tests/
+.pytest_cache/
+.coverage
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
