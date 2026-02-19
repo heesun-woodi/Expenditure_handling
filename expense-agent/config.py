@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import json
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -21,15 +20,35 @@ PARENT_FOLDER_ID: str = os.environ.get("PARENT_FOLDER_ID", "")
 
 # --- Slack User IDs ---
 FINANCE_MANAGER_USER_ID: str = os.environ.get("FINANCE_MANAGER_USER_ID", "")  # @Eunmi Wi
-CEO_USER_ID: str = os.environ.get("CEO_USER_ID", "")  # @Paul
 CFO_USER_ID: str = os.environ.get("CFO_USER_ID", "")  # @Sungyoung Jung
+
+# --- Sharing: Google 계정 이메일 및 도메인 ---
+PAUL_EMAIL: str = "paul@mfitlab.com"
+FINANCE_MANAGER_EMAIL: str = "eunmi.wi@mfitlab.com"
+COMPANY_DOMAIN: str = "mfitlab.com"
 
 # --- Channels ---
 EXPENSE_SUBMIT_CHANNEL_ID: str = os.environ.get("EXPENSE_SUBMIT_CHANNEL_ID", "")
 
-# --- Channel → Project Name Mapping ---
-# JSON format: {"C01234ABC": "푸드케어 CRO PJ", "C56789DEF": "알파 프로젝트"}
-CHANNEL_PROJECT_MAP: dict = json.loads(os.getenv("CHANNEL_PROJECT_MAP", "{}"))
+# --- Dungeon API (프로젝트명 조회) ---
+DUNGEON_API_BASE_URL: str = os.environ.get("DUNGEON_API_BASE_URL", "")
+DUNGEON_API_EMAIL: str = os.environ.get("DUNGEON_API_EMAIL", "")
+DUNGEON_API_PASSWORD: str = os.environ.get("DUNGEON_API_PASSWORD", "")
+
+# --- Expense Categories ---
+EXPENSE_CATEGORIES: list = [
+    "회의비", "기타비용", "점심식비", "야근식비", "주말식비", "회식비", "기타식비",
+    "업무교통비", "야근교통비", "국내출장비", "국외출장비", "접대비",
+    "우편비", "수도비", "난방비", "전기비", "세금", "보험비", "유류비", "퀵사용료",
+    "교육훈련비", "도서구입비", "정기구독료", "사무용품비", "소모품비", "IT솔루션",
+    "서류발급비", "온라인 마케팅", "광고비", "판촉물제작비", "오사용",
+]
+
+# --- User List (닉네임 → 실명 조회) ---
+USER_LIST_SPREADSHEET_ID: str = "1sCJsHzEBfhEdnvn-G-ehtTFJxMoEeGhLnsTsFgdJ7TI"
+
+# --- Project Cost Sheet (프로젝트 비용 내역서) ---
+PROJECT_COST_SPREADSHEET_ID: str = "1AYRT7Skv0eYm1IQqGOWBGpD89DnCoJLf1ROOFBGhTeQ"
 
 # --- Constants ---
 MAX_RECEIPT_COUNT: int = 15
