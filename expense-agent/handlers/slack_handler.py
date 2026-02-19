@@ -412,6 +412,9 @@ def _on_submit_button(body: dict, client: WebClient) -> None:
             append_to_project_cost_sheet(
                 sheets_svc, context.expense_report,
                 context.user_display_name, current_items,
+                channel_id=context.channel_id,
+                thread_ts=context.thread_ts,
+                user_id=context.user_id,
             )
     except Exception as e:
         logger.error(f"프로젝트 비용 내역서 기록 실패: {e}")

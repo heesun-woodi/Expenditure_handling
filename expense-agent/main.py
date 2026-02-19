@@ -4,6 +4,7 @@ from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
 from config import SLACK_BOT_TOKEN, SLACK_APP_TOKEN, LOG_LEVEL
+from handlers.deposit_notifier import start_deposit_polling
 from handlers.slack_handler import register_handlers
 from utils.logger import setup_logger
 
@@ -21,6 +22,7 @@ def main():
     logger.info("Expense Agent 시작 중...")
 
     app = create_app()
+    start_deposit_polling(app.client)
     handler = SocketModeHandler(app, SLACK_APP_TOKEN)
 
     logger.info("Socket Mode 연결 시작...")

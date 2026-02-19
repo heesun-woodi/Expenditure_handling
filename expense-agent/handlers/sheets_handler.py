@@ -565,6 +565,9 @@ def append_to_project_cost_sheet(
     expense_report: ExpenseReport,
     user_display_name: str,
     current_items: list[dict],
+    channel_id: str = "",
+    thread_ts: str = "",
+    user_id: str = "",
 ) -> None:
     """프로젝트 비용 내역서에 비용 항목 추가"""
     rows = []
@@ -584,11 +587,15 @@ def append_to_project_cost_sheet(
             item.get("subtotal", ""),          # H: 소계
             "",                                # I: 비고
             "",                                # J: 입금일자
+            channel_id,                        # K: slack_channel_id
+            thread_ts,                         # L: slack_thread_ts
+            user_id,                           # M: slack_user_id
+            "",                                # N: 알림발송
         ])
 
     sheets_service.spreadsheets().values().append(
         spreadsheetId=PROJECT_COST_SPREADSHEET_ID,
-        range="A1:J1",
+        range="A1:N1",
         valueInputOption="USER_ENTERED",
         insertDataOption="INSERT_ROWS",
         body={"values": rows},
