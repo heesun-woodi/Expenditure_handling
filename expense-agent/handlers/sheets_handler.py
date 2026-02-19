@@ -395,6 +395,12 @@ def attach_receipt_images(
         })
 
     if data:
+        # 기존 템플릿 내용 클리어 후 삽입
+        sheets_service.spreadsheets().values().clear(
+            spreadsheetId=spreadsheet_id,
+            range=f"{RECEIPT_SHEET_NAME}!B2:B100",
+        ).execute()
+
         sheets_service.spreadsheets().values().batchUpdate(
             spreadsheetId=spreadsheet_id,
             body={

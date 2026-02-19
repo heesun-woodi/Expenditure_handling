@@ -82,6 +82,33 @@ def encode_image_base64(image_path: str) -> tuple[str, str]:
     return data, media_type
 
 
+def process_pdf(file_path: str) -> tuple[str, str]:
+    """PDF를 base64로 인코딩하여 Claude API용 데이터 반환 (document 타입)"""
+    with open(file_path, "rb") as f:
+        data = base64.standard_b64encode(f.read()).decode("utf-8")
+    return data, "application/pdf"
+
+
+def convert_pdf_pages_to_jpg(pdf_path: str) -> list[str]:
+    """PDF의 각 페이지를 JPG 이미지로 변환하여 경로 목록 반환 (Sheets 첨부용)"""
+    import fitz  # PyMuPDF
+
+    os.makedirs(TEMP_DIR, exist_ok=True)
+    jpg_paths = []
+    doc = fitz.open(pdf_path)
+
+    for page_num in range(len(doc)):
+        page = doc[page_num]
+        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+        jpg_path = os.path.join(TEMP_DIR, f"{Path(pdf_path).stem}_page{page_num + 1}.jpg")
+        pix.save(jpg_path)
+        jpg_paths.append(jpg_path)
+        logger.info(f"PDF 페이지 {page_num + 1} → JPG 변환 완료: {jpg_path}")
+
+    doc.close()
+    return jpg_paths
+
+
 def get_jpg_path_for_sheets(file_path: str) -> str:
     """Google Sheets 첨부용 JPG 경로 반환 (HEIC면 변환, 아니면 원본)"""
     ext = Path(file_path).suffix.lower()

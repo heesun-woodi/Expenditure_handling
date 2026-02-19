@@ -53,6 +53,7 @@ PROJECT_COST_SPREADSHEET_ID: str = "1AYRT7Skv0eYm1IQqGOWBGpD89DnCoJLf1ROOFBGhTeQ
 # --- Constants ---
 MAX_RECEIPT_COUNT: int = 15
 SUPPORTED_IMAGE_TYPES: set = {"image/jpeg", "image/png", "image/heic", "image/heif", "image/gif", "image/webp"}
+SUPPORTED_PDF_TYPES: set = {"application/pdf"}
 TEMP_DIR: str = os.getenv("TEMP_DIR", "/tmp/expense-agent")
 MAX_IMAGE_DIMENSION: int = 1024
 HIGH_AMOUNT_THRESHOLD: int = 10_000_000

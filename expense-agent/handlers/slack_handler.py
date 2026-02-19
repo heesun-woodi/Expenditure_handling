@@ -17,6 +17,7 @@ from config import (
     MAX_RECEIPT_COUNT,
     PARENT_FOLDER_ID,
     SUPPORTED_IMAGE_TYPES,
+    SUPPORTED_PDF_TYPES,
     TEMP_DIR,
 )
 from models import (
@@ -43,8 +44,10 @@ from handlers.sheets_handler import (
 )
 from utils.image_processor import (
     cleanup_temp_files,
+    convert_pdf_pages_to_jpg,
     get_jpg_path_for_sheets,
     process_image,
+    process_pdf,
 )
 from utils.validators import validate_receipt_data
 
@@ -88,7 +91,7 @@ def _on_app_mention(event: dict, say, client: WebClient) -> None:
     files = event.get("files", [])
     image_files = [
         f for f in files
-        if f.get("mimetype", "") in SUPPORTED_IMAGE_TYPES
+        if f.get("mimetype", "") in SUPPORTED_IMAGE_TYPES | SUPPORTED_PDF_TYPES
     ]
 
     if not image_files:
@@ -157,13 +160,21 @@ def _process_receipts_background(
             local_path = _download_slack_file(client, file_info, idx)
             temp_files.append(local_path)
 
-            b64_data, media_type = process_image(local_path)
-            images_for_analysis.append((b64_data, media_type))
-
-            jpg_path = get_jpg_path_for_sheets(local_path)
-            if jpg_path != local_path:
-                temp_files.append(jpg_path)
-            sheets_image_paths.append(jpg_path)
+            if file_info.get("mimetype") == "application/pdf":
+                # PDF: Claude에 document 타입으로 직접 전달
+                b64_data, media_type = process_pdf(local_path)
+                images_for_analysis.append((b64_data, media_type))
+                # Sheets용: 페이지별 JPG 변환
+                jpg_pages = convert_pdf_pages_to_jpg(local_path)
+                temp_files.extend(jpg_pages)
+                sheets_image_paths.extend(jpg_pages)
+            else:
+                b64_data, media_type = process_image(local_path)
+                images_for_analysis.append((b64_data, media_type))
+                jpg_path = get_jpg_path_for_sheets(local_path)
+                if jpg_path != local_path:
+                    temp_files.append(jpg_path)
+                sheets_image_paths.append(jpg_path)
 
         # === Phase 2: AI 분석 (병렬) ===
         logger.info("Phase 2: AI 영수증 분석 시작")

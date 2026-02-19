@@ -37,6 +37,27 @@ def analyze_receipt(image_base64: str, media_type: str) -> dict:
     """
     client = _get_client()
 
+    if media_type == "application/pdf":
+        content_block = {
+            "type": "document",
+            "source": {
+                "type": "base64",
+                "media_type": media_type,
+                "data": image_base64,
+            },
+        }
+        prompt_text = "위 PDF 영수증을 분석하여 JSON 형식으로 데이터를 추출해주세요."
+    else:
+        content_block = {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media_type,
+                "data": image_base64,
+            },
+        }
+        prompt_text = "위 영수증 이미지를 분석하여 JSON 형식으로 데이터를 추출해주세요."
+
     message = client.messages.create(
         model=CLAUDE_MODEL,
         max_tokens=1024,
@@ -45,18 +66,8 @@ def analyze_receipt(image_base64: str, media_type: str) -> dict:
             {
                 "role": "user",
                 "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": image_base64,
-                        },
-                    },
-                    {
-                        "type": "text",
-                        "text": "위 영수증 이미지를 분석하여 JSON 형식으로 데이터를 추출해주세요.",
-                    },
+                    content_block,
+                    {"type": "text", "text": prompt_text},
                 ],
             }
         ],
