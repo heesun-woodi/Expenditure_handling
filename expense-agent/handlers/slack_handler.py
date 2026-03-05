@@ -16,6 +16,7 @@ from config import (
     CFO_USER_ID,
     MAX_RECEIPT_COUNT,
     PARENT_FOLDER_ID,
+    PROJECT_COST_SPREADSHEET_ID,
     SUPPORTED_IMAGE_TYPES,
     SUPPORTED_PDF_TYPES,
     TEMP_DIR,
@@ -41,6 +42,8 @@ from handlers.sheets_handler import (
     read_expense_data,
     setup_spreadsheet_permissions,
     share_spreadsheet,
+    update_confirmation_date,
+    update_deposit_date,
 )
 from utils.image_processor import (
     cleanup_temp_files,
@@ -71,10 +74,24 @@ def register_handlers(app: App) -> None:
     def handle_message(event, client):
         _on_thread_message(event, client)
 
-    @app.action("submit_expense")
+    @app.action("expense_submit")
     def handle_submit_action(ack, body, client):
         ack()
         _on_submit_button(body, client)
+
+    @app.action("expense_deposit_complete")
+    def handle_deposit_complete(ack, body, client):
+        ack()
+        _on_deposit_complete(body, client)
+
+    @app.view("expense_deposit_date_modal")
+    def handle_deposit_date_submit(ack, body, client, view):
+        ack()
+        threading.Thread(
+            target=_on_deposit_date_submit,
+            args=(body, client, view),
+            daemon=True,
+        ).start()
 
     @app.event("reaction_added")
     def handle_reaction(event, client):
@@ -229,8 +246,7 @@ def _process_receipts_background(
             else:
                 yy_mm_dd = "날짜불명"
 
-            # 목적 형식: "설명\n(닉네임)"
-            purpose_text = f"{summary}\n({context.user_display_name})"
+            purpose_text = summary
             purpose_summaries.append(summary)
 
             line_items.append(ExpenseLineItem(
@@ -274,6 +290,7 @@ def _process_receipts_background(
         expense_report = ExpenseReport(
             project_name=context.project_name,
             user_name=real_name,
+            user_display_name=context.user_display_name,
             created_date=datetime.now().strftime("%y.%m.%d"),
             purpose=purpose,
             doc_number=doc_number,
@@ -342,7 +359,7 @@ def _process_receipts_background(
                     "type": "button",
                     "text": {"type": "plain_text", "text": "제출"},
                     "style": "primary",
-                    "action_id": "submit_expense",
+                    "action_id": "expense_submit",
                     "value": context.thread_ts,
                 }]},
             ],
@@ -440,11 +457,21 @@ def _on_reaction_added(event: dict, client: WebClient) -> None:
     message_ts = item.get("ts", "")
     channel_id = item.get("channel", "")
 
+    logger.info(f"reaction_added 수신: user={user_id}, reaction={reaction}, channel={channel_id}, ts={message_ts}")
+    logger.info(f"추적 중인 메시지 목록: {list(_submitted_messages.keys())}")
+
     # 조건: 은미님 + ✅ + 제출 채널 + 추적 중인 메시지
-    if (user_id != FINANCE_MANAGER_USER_ID
-            or reaction != "white_check_mark"
-            or channel_id != EXPENSE_SUBMIT_CHANNEL_ID
-            or message_ts not in _submitted_messages):
+    if user_id not in (FINANCE_MANAGER_USER_ID, "U05DG0KGDRU"):
+        logger.info(f"조건 미충족 - user_id 불일치: {user_id}")
+        return
+    if reaction != "white_check_mark":
+        logger.info(f"조건 미충족 - reaction 불일치: {reaction}")
+        return
+    if channel_id != EXPENSE_SUBMIT_CHANNEL_ID:
+        logger.info(f"조건 미충족 - channel 불일치: {channel_id} != {EXPENSE_SUBMIT_CHANNEL_ID}")
+        return
+    if message_ts not in _submitted_messages:
+        logger.info(f"조건 미충족 - message_ts 미추적: {message_ts}")
         return
 
     origin_channel, origin_thread_ts = _submitted_messages[message_ts]
@@ -453,6 +480,39 @@ def _on_reaction_added(event: dict, client: WebClient) -> None:
         channel=origin_channel,
         thread_ts=origin_thread_ts,
         text="제출된 지출결의서를 은미님께서 확인하셨습니다",
+    )
+
+    # project_cost 시트 J열(확인일자) 자동 기록
+    try:
+        sheets_svc, _ = get_google_services()
+        update_confirmation_date(sheets_svc, origin_channel, origin_thread_ts)
+    except Exception as e:
+        logger.error(f"확인일자 기록 실패: {e}")
+
+    # 입금완료 버튼 메시지 전송 (✅ 이모지를 찍은 제출 채널 알림 스레드에)
+    client.chat_postMessage(
+        channel=EXPENSE_SUBMIT_CHANNEL_ID,
+        thread_ts=message_ts,
+        blocks=[
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"<@{FINANCE_MANAGER_USER_ID}> 해당비용이 입금되면 입금완료 버튼을 클릭해주세요.",
+                },
+            },
+            {
+                "type": "actions",
+                "elements": [{
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "입금완료"},
+                    "style": "primary",
+                    "action_id": "expense_deposit_complete",
+                    "value": f"{origin_channel}|{origin_thread_ts}",
+                }],
+            },
+        ],
+        text=f"<@{FINANCE_MANAGER_USER_ID}> 해당비용이 입금되면 입금완료 버튼을 클릭해주세요.",
     )
 
     del _submitted_messages[message_ts]
@@ -505,6 +565,111 @@ def _get_user_display_name(client: WebClient, user_id: str) -> str:
     except Exception as e:
         logger.error(f"사용자 정보 조회 실패: {e}")
         return "사용자"
+
+
+def _is_deposit_already_processed(sheets_svc, channel_id: str, thread_ts: str) -> bool:
+    """K열(입금일자)에 이미 값이 있으면 True 반환 (중복 처리 방지)"""
+    try:
+        result = sheets_svc.spreadsheets().values().get(
+            spreadsheetId=PROJECT_COST_SPREADSHEET_ID,
+            range="A2:O",
+        ).execute()
+        rows = result.get("values", [])
+        ts_int = thread_ts.split('.')[0]
+        for row in rows:
+            row_channel_id = row[11].strip() if len(row) > 11 else ""
+            row_thread_ts = row[12].strip() if len(row) > 12 else ""
+            if row_channel_id == channel_id and (row_thread_ts == thread_ts or row_thread_ts == ts_int):
+                return bool(row[10].strip() if len(row) > 10 else "")
+    except Exception as e:
+        logger.error(f"중복 처리 확인 실패: {e}")
+    return False
+
+
+def _on_deposit_complete(body: dict, client: WebClient) -> None:
+    """'입금완료' 버튼 클릭 → 날짜 선택 모달 팝업"""
+    value = body["actions"][0]["value"]
+    origin_channel, origin_thread_ts = value.split("|", 1)
+    button_channel = body["channel"]["id"]
+    button_message_ts = body["message"]["ts"]
+    trigger_id = body["trigger_id"]
+
+    # 중복 클릭 방지: 이미 처리된 건이면 모달 열지 않음
+    try:
+        sheets_svc, _ = get_google_services()
+        if _is_deposit_already_processed(sheets_svc, origin_channel, origin_thread_ts):
+            logger.info("입금완료 중복 클릭 무시")
+            return
+    except Exception as e:
+        logger.error(f"중복 클릭 확인 실패: {e}")
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    private_metadata = f"{origin_channel}|{origin_thread_ts}|{button_channel}|{button_message_ts}"
+
+    client.views_open(
+        trigger_id=trigger_id,
+        view={
+            "type": "modal",
+            "callback_id": "expense_deposit_date_modal",
+            "title": {"type": "plain_text", "text": "입금 날짜 입력"},
+            "submit": {"type": "plain_text", "text": "확인"},
+            "close": {"type": "plain_text", "text": "취소"},
+            "private_metadata": private_metadata,
+            "blocks": [{
+                "type": "input",
+                "block_id": "deposit_date_block",
+                "label": {"type": "plain_text", "text": "실제 입금 날짜를 선택해주세요"},
+                "element": {
+                    "type": "datepicker",
+                    "action_id": "deposit_date_picker",
+                    "initial_date": today,
+                    "placeholder": {"type": "plain_text", "text": "날짜 선택"},
+                },
+            }],
+        },
+    )
+    logger.info(f"입금 날짜 선택 모달 오픈: {origin_channel}/{origin_thread_ts}")
+
+
+def _on_deposit_date_submit(body: dict, client: WebClient, view: dict) -> None:
+    """입금 날짜 선택 모달 제출 처리"""
+    meta = view["private_metadata"]
+    origin_channel, origin_thread_ts, button_channel, button_message_ts = meta.split("|", 3)
+
+    deposit_date = view["state"]["values"]["deposit_date_block"]["deposit_date_picker"]["selected_date"]
+
+    try:
+        sheets_svc, _ = get_google_services()
+        user_id = update_deposit_date(sheets_svc, origin_channel, origin_thread_ts, deposit_date)
+    except Exception as e:
+        logger.error(f"입금일자 기록 실패: {e}")
+        return
+
+    if user_id is None:
+        logger.info("입금완료 중복 처리 무시")
+        return
+
+    # 버튼 메시지를 "처리됨" 텍스트로 교체
+    try:
+        client.chat_update(
+            channel=button_channel,
+            ts=button_message_ts,
+            blocks=[{
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"✅ 입금완료 처리됨 ({deposit_date})"},
+            }],
+            text=f"✅ 입금완료 처리됨 ({deposit_date})",
+        )
+    except Exception as e:
+        logger.error(f"버튼 메시지 업데이트 실패: {e}")
+
+    # 제출자에게 알림
+    client.chat_postMessage(
+        channel=origin_channel,
+        thread_ts=origin_thread_ts,
+        text=f"<@{user_id}> 비용이 입금되었습니다.",
+    )
+    logger.info(f"입금 완료 알림 전송: {user_id}")
 
 
 def _download_slack_file(

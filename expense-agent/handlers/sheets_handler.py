@@ -36,14 +36,15 @@ DEFAULT_CELL_MAPPING = {
     "date_col": 5,          # F (0-indexed)
     "category_col": 7,      # H
     "purpose_col": 9,        # J
+    "participants_col": 10,  # K (비용 사용한 사람들)
     "quantity_col": 11,      # L
     "unit_price_col": 14,    # O
     "supply_col": 17,        # R
-    "tax_col": 19,           # T
+    "tax_col": 18,           # S
     "subtotal_col": 20,      # U
-    "total_row": 18,
-    "bottom_author_cell": "S24",
-    "bottom_date_cell": "A22",
+    "total_row": 19,
+    "bottom_author_cell": "S25",
+    "bottom_date_cell": "A23",
 }
 
 
@@ -216,6 +217,14 @@ def fill_expense_data(
                 "values": [[item.purpose]],
             })
 
+        # 비용 사용한 사람들 (K열) - 닉네임 입력
+        participants_col = cell_mapping.get("participants_col")
+        if participants_col is not None:
+            data.append({
+                "range": f"{TEMPLATE_SHEET_NAME}!{_col_letter(participants_col)}{row}",
+                "values": [[expense_report.user_display_name]],
+            })
+
         # 수량
         qty_col = cell_mapping.get("quantity_col")
         if qty_col is not None:
@@ -266,18 +275,17 @@ def fill_expense_data(
                 "values": [[expense_report.total_amount]],
             })
 
-    # 하단 날짜 입력
+    # 하단 날짜/작성자는 병합 복원 이후 별도 batchUpdate로 기록 (병합 복원 시 값 초기화 방지)
     now = datetime.now()
+    date_str = f"{now.year} 년   {now.month}  월   {now.day}  일"
+    bottom_data = []
     if cell_mapping.get("bottom_date_cell"):
-        date_str = f"{now.year} 년   {now.month}  월   {now.day}  일"
-        data.append({
+        bottom_data.append({
             "range": f"{TEMPLATE_SHEET_NAME}!{cell_mapping['bottom_date_cell']}",
             "values": [[date_str]],
         })
-
-    # 하단 작성자 입력
     if cell_mapping.get("bottom_author_cell"):
-        data.append({
+        bottom_data.append({
             "range": f"{TEMPLATE_SHEET_NAME}!{cell_mapping['bottom_author_cell']}",
             "values": [[expense_report.user_name]],
         })
@@ -338,6 +346,14 @@ def fill_expense_data(
                 sheets_service, spreadsheet_id, sheet_id,
                 original_merges, data, cell_mapping,
             )
+
+            # 병합 복원 이후 하단 날짜/작성자 별도 기록 (병합 복원에 의한 초기화 방지)
+            if bottom_data:
+                sheets_service.spreadsheets().values().batchUpdate(
+                    spreadsheetId=spreadsheet_id,
+                    body={"valueInputOption": "USER_ENTERED", "data": bottom_data},
+                ).execute()
+                logger.info("하단 날짜/작성자 기록 완료")
 
             # 항목(category) 셀에 드롭다운 데이터 유효성 검사 복원
             category_col = cell_mapping.get("category_col")
@@ -552,6 +568,7 @@ def read_expense_data(
                 "purpose": cell("purpose_col"),
                 "date": cell("date_col"),
                 "subtotal": cell("subtotal_col"),
+                "participants": cell("participants_col"),
             })
         return items
 
@@ -578,29 +595,114 @@ def append_to_project_cost_sheet(
             purpose = purpose.split("\n(")[0]
         rows.append([
             expense_report.created_date,      # A: 작성일자
-            user_display_name,                 # B: 사용자
-            expense_report.doc_number,         # C: 문서번호
-            expense_report.project_name,       # D: 프로젝트명
-            item.get("category", ""),          # E: 항목
-            purpose,                           # F: 목적
-            item.get("date", ""),              # G: 일자
-            item.get("subtotal", ""),          # H: 소계
-            "",                                # I: 비고
-            "",                                # J: 입금일자
-            channel_id,                        # K: slack_channel_id
-            thread_ts,                         # L: slack_thread_ts
-            user_id,                           # M: slack_user_id
-            "",                                # N: 알림발송
+            user_display_name,                 # B: 제출자
+            item.get("participants", ""),      # C: 사용자 (K열 값 그대로)
+            expense_report.doc_number,         # D: 문서번호
+            expense_report.project_name,       # E: 프로젝트명
+            item.get("category", ""),          # F: 항목
+            purpose,                           # G: 목적
+            item.get("date", ""),              # H: 일자
+            item.get("subtotal", ""),          # I: 소계
+            "",                                # J: 확인일자 (✅ 반응 시 자동 기록)
+            "",                                # K: 입금일자 (재무팀 입력)
+            channel_id,                        # L: slack_channel_id
+            thread_ts,                         # M: slack_thread_ts
+            user_id,                           # N: slack_user_id
+            "",                                # O: 알림발송
         ])
 
     sheets_service.spreadsheets().values().append(
         spreadsheetId=PROJECT_COST_SPREADSHEET_ID,
-        range="A1:N1",
-        valueInputOption="USER_ENTERED",
+        range="A1:O1",
+        valueInputOption="RAW",
         insertDataOption="INSERT_ROWS",
         body={"values": rows},
     ).execute()
     logger.info(f"프로젝트 비용 내역서에 {len(rows)}건 기록 완료")
+
+
+def update_confirmation_date(sheets_service, channel_id: str, thread_ts: str) -> None:
+    """✅ 반응 시 project_cost 시트의 해당 행 J열(확인일자)에 오늘 날짜 기록"""
+    try:
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=PROJECT_COST_SPREADSHEET_ID,
+            range="A2:O",
+        ).execute()
+        rows = result.get("values", [])
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        update_requests = []
+
+        ts_int = thread_ts.split('.')[0]
+        for row_index, row in enumerate(rows):
+            row_channel_id = row[11].strip() if len(row) > 11 else ""
+            row_thread_ts = row[12].strip() if len(row) > 12 else ""
+            if row_channel_id == channel_id and (row_thread_ts == thread_ts or row_thread_ts == ts_int):
+                sheet_row = row_index + 2  # 헤더(1행) + 0-indexed → 실제 행 번호
+                update_requests.append({
+                    "range": f"J{sheet_row}",
+                    "values": [[today]],
+                })
+
+        if update_requests:
+            sheets_service.spreadsheets().values().batchUpdate(
+                spreadsheetId=PROJECT_COST_SPREADSHEET_ID,
+                body={
+                    "valueInputOption": "RAW",
+                    "data": update_requests,
+                },
+            ).execute()
+            logger.info(f"확인일자 기록 완료: {len(update_requests)}건 ({today})")
+        else:
+            logger.warning(f"확인일자 기록 대상 행 없음: channel={channel_id}, thread={thread_ts}")
+
+    except Exception as e:
+        logger.error(f"확인일자 기록 실패: {e}")
+
+
+def update_deposit_date(sheets_service, channel_id: str, thread_ts: str, deposit_date: str) -> Optional[str]:
+    """입금완료 확인 시 K열(입금일자) + O열(알림발송) 기록, user_id 반환"""
+    try:
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=PROJECT_COST_SPREADSHEET_ID,
+            range="A2:O",
+        ).execute()
+        rows = result.get("values", [])
+
+        notified_ts = datetime.now().isoformat()
+        update_requests = []
+        found_user_id = None
+
+        ts_int = thread_ts.split('.')[0]
+        for row_index, row in enumerate(rows):
+            row_channel_id = row[11].strip() if len(row) > 11 else ""
+            row_thread_ts = row[12].strip() if len(row) > 12 else ""
+            if row_channel_id == channel_id and (row_thread_ts == thread_ts or row_thread_ts == ts_int):
+                # K열(10)에 이미 입금일자가 있으면 중복 클릭 → skip
+                row_deposit = row[10].strip() if len(row) > 10 else ""
+                if row_deposit:
+                    logger.info(f"입금완료 중복 클릭 감지 - 이미 처리된 건: {row_deposit}")
+                    return None
+                sheet_row = row_index + 2
+                update_requests.append({"range": f"K{sheet_row}", "values": [[deposit_date]]})
+                update_requests.append({"range": f"O{sheet_row}", "values": [[notified_ts]]})
+                if found_user_id is None and len(row) > 13:
+                    found_user_id = row[13].strip()
+
+        if update_requests:
+            sheets_service.spreadsheets().values().batchUpdate(
+                spreadsheetId=PROJECT_COST_SPREADSHEET_ID,
+                body={"valueInputOption": "RAW", "data": update_requests},
+            ).execute()
+            logger.info(f"입금일자 기록 완료: {len(update_requests) // 2}건 ({deposit_date})")
+        else:
+            logger.warning(f"입금일자 기록 대상 행 없음: channel={channel_id}, thread={thread_ts}")
+
+        return found_user_id
+
+    except Exception as e:
+        logger.error(f"입금일자 기록 실패: {e}")
+        return None
 
 
 def calculate_tax(total_amount: int) -> tuple:
@@ -646,6 +748,8 @@ def _identify_data_columns(header_row_idx: int, row: list) -> dict:
             cols["category_col"] = col_idx
         elif "목적" in text:
             cols["purpose_col"] = col_idx
+        elif "사용자" in text or "참석자" in text or "참석" in text:
+            cols["participants_col"] = col_idx
         elif "수량" in text:
             cols["quantity_col"] = col_idx
         elif "단가" in text:

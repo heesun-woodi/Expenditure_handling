@@ -33,27 +33,27 @@ def _format_deposit_date(raw: str) -> str:
 
 
 def check_and_notify_deposits(client: WebClient) -> None:
-    """PROJECT_COST 시트에서 입금일자(J) 기입 + 알림 미발송(N) 행을 찾아 Slack 알림 전송"""
+    """PROJECT_COST 시트에서 입금일자(K) 기입 + 알림 미발송(O) 행을 찾아 Slack 알림 전송"""
     try:
         sheets_svc = _get_sheets_service()
 
         result = sheets_svc.spreadsheets().values().get(
             spreadsheetId=PROJECT_COST_SPREADSHEET_ID,
-            range="A2:N",
+            range="A2:O",
         ).execute()
         rows = result.get("values", [])
 
         for row_index, row in enumerate(rows):
-            # J열(index 9): 입금일자, K열(10): channel_id, L열(11): thread_ts,
-            # M열(12): user_id, N열(13): 알림발송
-            if len(row) < 13:
+            # K열(index 10): 입금일자, L열(11): channel_id, M열(12): thread_ts,
+            # N열(13): user_id, O열(14): 알림발송
+            if len(row) < 14:
                 continue
 
-            deposit_date = row[9].strip() if len(row) > 9 else ""
-            channel_id = row[10].strip() if len(row) > 10 else ""
-            thread_ts = row[11].strip() if len(row) > 11 else ""
-            user_id = row[12].strip() if len(row) > 12 else ""
-            notified = row[13].strip() if len(row) > 13 else ""
+            deposit_date = row[10].strip() if len(row) > 10 else ""
+            channel_id = row[11].strip() if len(row) > 11 else ""
+            thread_ts = row[12].strip() if len(row) > 12 else ""
+            user_id = row[13].strip() if len(row) > 13 else ""
+            notified = row[14].strip() if len(row) > 14 else ""
 
             # 조건: 입금일자 있음 + Slack 컨텍스트 있음 + 알림 미발송
             if not deposit_date or not channel_id or not thread_ts or not user_id:
@@ -76,12 +76,12 @@ def check_and_notify_deposits(client: WebClient) -> None:
                 logger.error(f"입금 완료 알림 발송 실패: {e}")
                 continue
 
-            # N열에 발송 타임스탬프 기록 (2행부터 시작이므로 row_index+2)
+            # O열에 발송 타임스탬프 기록 (2행부터 시작이므로 row_index+2)
             sheet_row = row_index + 2
             try:
                 sheets_svc.spreadsheets().values().update(
                     spreadsheetId=PROJECT_COST_SPREADSHEET_ID,
-                    range=f"N{sheet_row}",
+                    range=f"O{sheet_row}",
                     valueInputOption="RAW",
                     body={"values": [[datetime.now().isoformat()]]},
                 ).execute()

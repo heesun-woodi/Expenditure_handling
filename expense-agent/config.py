@@ -7,7 +7,8 @@ load_dotenv()
 
 # --- Slack ---
 SLACK_BOT_TOKEN: str = os.environ.get("SLACK_BOT_TOKEN", "")
-SLACK_APP_TOKEN: str = os.environ.get("SLACK_APP_TOKEN", "")
+SLACK_SIGNING_SECRET: str = os.environ.get("SLACK_SIGNING_SECRET", "")
+PORT: int = int(os.environ.get("PORT", "3000"))
 
 # --- Anthropic ---
 ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -48,7 +49,7 @@ EXPENSE_CATEGORIES: list = [
 USER_LIST_SPREADSHEET_ID: str = "1sCJsHzEBfhEdnvn-G-ehtTFJxMoEeGhLnsTsFgdJ7TI"
 
 # --- Project Cost Sheet (프로젝트 비용 내역서) ---
-PROJECT_COST_SPREADSHEET_ID: str = "1AYRT7Skv0eYm1IQqGOWBGpD89DnCoJLf1ROOFBGhTeQ"
+PROJECT_COST_SPREADSHEET_ID: str = "1h7q8_vxdRzHvPLsJUYnD36kpPF2oMzudfwzw3MQRggg"
 
 # --- Constants ---
 MAX_RECEIPT_COUNT: int = 15

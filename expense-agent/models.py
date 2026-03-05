@@ -39,7 +39,8 @@ class ExpenseLineItem:
 @dataclass
 class ExpenseReport:
     project_name: str
-    user_name: str
+    user_name: str             # 실명 (헤더 N5, 하단 S25용)
+    user_display_name: str     # 닉네임 (K열 사용자용)
     created_date: str          # "YY.MM.DD"
     purpose: str               # AI가 요약한 사용목적
     doc_number: str            # "연-닉네임-순번"
