@@ -437,12 +437,16 @@ def _on_submit_button(body: dict, client: WebClient) -> None:
         logger.error(f"프로젝트 비용 내역서 기록 실패: {e}")
 
     # 최종 제출
-    _send_final_notification(client, context)
+    finance_url = _send_final_notification(client, context)
+
+    confirm_text = "지출결의서가 최종 제출되었습니다. 감사합니다!"
+    if finance_url:
+        confirm_text += f"\n\n재무팀 채널에 전달된 메시지: {finance_url}"
 
     client.chat_postMessage(
         channel=channel_id,
         thread_ts=thread_ts,
-        text="지출결의서가 최종 제출되었습니다. 감사합니다!",
+        text=confirm_text,
     )
 
     del _active_threads[thread_ts]
@@ -519,20 +523,20 @@ def _on_reaction_added(event: dict, client: WebClient) -> None:
     logger.info(f"은미님 확인 완료 알림 전송: {origin_channel}/{origin_thread_ts}")
 
 
-def _send_final_notification(client: WebClient, context: ProcessingContext) -> None:
-    """지출결의서 처리요청 채널에 최종 메시지 발송"""
+def _send_final_notification(client: WebClient, context: ProcessingContext) -> "str | None":
+    """지출결의서 처리요청 채널에 최종 메시지 발송. 발송된 메시지 permalink 반환."""
     report = context.expense_report
     if not report:
         logger.error("ExpenseReport가 없습니다.")
-        return
+        return None
 
     year_short = report.expense_year % 100
     months_str = " ".join(f"{m}월" for m in report.expense_months)
 
     message = (
-        f"<@{FINANCE_MANAGER_USER_ID}> 은미님!\n\n"
-        f"{context.project_name} {year_short}년 {months_str} "
-        f"개인카드사용 지출결의서 전달드립니다.\n\n"
+        f"<@{FINANCE_MANAGER_USER_ID}> 은미님! "
+        f"<@{context.user_id}>가 {context.project_name} {year_short}년 {months_str} "
+        f"개인카드사용 지출결의서를 제출했습니다.\n\n"
         f"cc <@{CFO_USER_ID}>\n\n"
         f":page_facing_up: {context.sheets_url}"
     )
@@ -544,6 +548,16 @@ def _send_final_notification(client: WebClient, context: ProcessingContext) -> N
     notification_ts = response["ts"]
     _submitted_messages[notification_ts] = (context.channel_id, context.thread_ts)
     logger.info(f"최종 알림 발송 완료: {EXPENSE_SUBMIT_CHANNEL_ID}")
+
+    try:
+        permalink_response = client.chat_getPermalink(
+            channel=EXPENSE_SUBMIT_CHANNEL_ID,
+            message_ts=notification_ts,
+        )
+        return permalink_response["permalink"]
+    except Exception as e:
+        logger.error(f"permalink 조회 실패: {e}")
+        return None
 
 
 # --- 헬퍼 함수 ---

@@ -5,7 +5,6 @@ from slack_bolt import App
 from slack_bolt.adapter.flask import SlackRequestHandler
 
 from config import SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET, PORT, LOG_LEVEL
-from handlers.deposit_notifier import start_deposit_polling
 from handlers.slack_handler import register_handlers
 from utils.logger import setup_logger
 
@@ -23,7 +22,6 @@ def main():
     logger.info("Expense Agent 시작 중...")
 
     bolt_app = create_app()
-    start_deposit_polling(bolt_app.client)
 
     flask_app = Flask(__name__)
     handler = SlackRequestHandler(bolt_app)
