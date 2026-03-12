@@ -68,7 +68,13 @@ def _get_target_url(payload: dict) -> str | None:
         return None
 
     if payload_type == "event_callback":
-        event_type = payload.get("event", {}).get("type", "")
+        event = payload.get("event", {})
+        event_type = event.get("type", "")
+        if event_type == "reaction_added":
+            reaction = event.get("reaction", "")
+            if reaction == "email":
+                return SIMPSON_SERVICE_URL
+            return EXPENSE_AGENT_URL
         if event_type in EXPENSE_EVENT_TYPES:
             return EXPENSE_AGENT_URL
         return SIMPSON_SERVICE_URL
