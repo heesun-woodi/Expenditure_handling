@@ -112,10 +112,22 @@ def _on_app_mention(event: dict, say, client: WebClient) -> None:
     ]
 
     if not image_files:
-        say(
-            text="영수증 이미지를 함께 첨부해주세요. (JPG, PNG, HEIC 지원)",
-            thread_ts=thread_ts,
-        )
+        mention_text = event.get("text", "").lower()
+        help_keywords = ["도움", "사용법", "사용방법", "어떻게", "뭐", "뭘", "기능",
+                         "할 수 있", "할수있", "help", "?"]
+        guide_url = "https://www.notion.so/hackinggrowth/Mr-Simpson-3289277e317b8132b184c4bb5307f196"
+
+        if any(kw in mention_text for kw in help_keywords):
+            say(
+                text=f"안녕하세요! Mr.Simpson 사용 가이드를 확인해주세요.\n📖 {guide_url}",
+                thread_ts=thread_ts,
+            )
+        else:
+            say(
+                text=f"영수증 이미지를 함께 첨부해주세요. (JPG, PNG, HEIC, PDF 지원)\n\n"
+                     f"사용법이 궁금하시면 가이드를 확인해주세요.\n📖 {guide_url}",
+                thread_ts=thread_ts,
+            )
         return
 
     if len(image_files) > MAX_RECEIPT_COUNT:
