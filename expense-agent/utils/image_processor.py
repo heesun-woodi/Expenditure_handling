@@ -11,6 +11,10 @@ from config import MAX_IMAGE_DIMENSION, TEMP_DIR
 
 logger = logging.getLogger(__name__)
 
+# 디컴프레션 폭탄 방어: 60MP 초과 이미지는 디코딩 거부 (48MP 폰 카메라는 허용).
+# 가로 20000px PNG 한 장이면 raw RGB 1.2GB → OOM 으로 호스트가 멈출 수 있어 상한을 둔다.
+Image.MAX_IMAGE_PIXELS = 60_000_000
+
 
 def process_image(file_path: str) -> tuple[str, str]:
     """
@@ -39,23 +43,31 @@ def convert_heic_to_jpg(heic_path: str) -> str:
     import pillow_heif
     pillow_heif.register_heif_opener()
 
-    img = Image.open(heic_path)
     jpg_path = os.path.join(TEMP_DIR, Path(heic_path).stem + ".jpg")
-    img.save(jpg_path, "JPEG", quality=90)
+    with Image.open(heic_path) as img:
+        if img.mode in ("RGBA", "LA", "P"):
+            img = img.convert("RGB")
+        img.save(jpg_path, "JPEG", quality=90)
     logger.info(f"HEIC → JPG 변환 완료: {jpg_path}")
     return jpg_path
 
 
 def resize_image(image_path: str, max_dim: int = MAX_IMAGE_DIMENSION) -> str:
     """이미지를 최대 크기 이내로 리사이즈 (비율 유지)"""
-    img = Image.open(image_path)
-    if img.width <= max_dim and img.height <= max_dim:
-        return image_path
-
-    img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
     resized_path = os.path.join(TEMP_DIR, "resized_" + Path(image_path).name)
-    img.save(resized_path, "JPEG", quality=85)
-    logger.info(f"리사이즈 완료: {img.width}x{img.height} → {resized_path}")
+    with Image.open(image_path) as img:
+        # 헤더만 읽어 크기 확인 (전체 디코딩 전). 이미 작으면 재인코딩 없이 원본 사용.
+        if img.width <= max_dim and img.height <= max_dim:
+            return image_path
+
+        # JPEG draft 모드: libjpeg가 1/2·1/4·1/8 축소 디코딩 → 대용량 사진의 피크 메모리 급감.
+        # (JPEG 이외 포맷에는 no-op)
+        img.draft("RGB", (max_dim, max_dim))
+        img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
+        if img.mode in ("RGBA", "LA", "P"):
+            img = img.convert("RGB")
+        img.save(resized_path, "JPEG", quality=85)
+        logger.info(f"리사이즈 완료: {img.width}x{img.height} → {resized_path}")
     return resized_path
 
 
@@ -66,15 +78,16 @@ def encode_image_base64(image_path: str) -> tuple[str, str]:
     Returns:
         (base64_data, media_type)
     """
-    ext = Path(image_path).suffix.lower()
-    media_types = {
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".png": "image/png",
-        ".gif": "image/gif",
-        ".webp": "image/webp",
+    # 확장자가 아닌 실제 파일 포맷으로 media_type 결정
+    # (Slack이 JPEG를 .png 확장자로 전송하는 경우 대응)
+    format_to_media_type = {
+        "JPEG": "image/jpeg",
+        "PNG": "image/png",
+        "GIF": "image/gif",
+        "WEBP": "image/webp",
     }
-    media_type = media_types.get(ext, "image/jpeg")
+    with Image.open(image_path) as img:
+        media_type = format_to_media_type.get(img.format, "image/jpeg")
 
     with open(image_path, "rb") as f:
         data = base64.standard_b64encode(f.read()).decode("utf-8")
@@ -104,6 +117,8 @@ def convert_pdf_pages_to_jpg(pdf_path: str) -> list[str]:
         pix.save(jpg_path)
         jpg_paths.append(jpg_path)
         logger.info(f"PDF 페이지 {page_num + 1} → JPG 변환 완료: {jpg_path}")
+        # 페이지별 비압축 픽스맵을 즉시 해제 (다중 페이지 PDF의 메모리 누적 방지)
+        pix = None
 
     doc.close()
     return jpg_paths
