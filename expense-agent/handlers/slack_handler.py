@@ -13,7 +13,6 @@ from slack_sdk import WebClient
 from config import (
     EXPENSE_SUBMIT_CHANNEL_ID,
     FINANCE_MANAGER_USER_ID,
-    CFO_USER_ID,
     MAX_RECEIPT_COUNT,
     PARENT_FOLDER_ID,
     PROJECT_COST_SPREADSHEET_ID,
@@ -38,12 +37,15 @@ from handlers.sheets_handler import (
     fill_expense_data,
     get_google_services,
     get_next_doc_number,
+    get_or_create_quarter_folder,
     lookup_real_name,
     read_expense_data,
     setup_spreadsheet_permissions,
     share_spreadsheet,
     update_confirmation_date,
     update_deposit_date,
+    store_submit_channel_ts,
+    lookup_origin_by_submit_ts,
 )
 from utils.image_processor import (
     cleanup_temp_files,
@@ -324,9 +326,12 @@ def _process_receipts_background(
             f"_개인카드지출결의서_{context.user_display_name}"
         )
 
+        quarter_folder_id = get_or_create_quarter_folder(
+            drive_svc, expense_year, expense_months[0], PARENT_FOLDER_ID,
+        )
         spreadsheet_id = copy_template(
             drive_svc, new_title,
-            parent_folder_id=PARENT_FOLDER_ID or None,
+            parent_folder_id=quarter_folder_id,
         )
         setup_spreadsheet_permissions(drive_svc, spreadsheet_id)
         cell_mapping = discover_cell_mapping(sheets_svc, spreadsheet_id)
@@ -487,10 +492,23 @@ def _on_reaction_added(event: dict, client: WebClient) -> None:
         logger.info(f"조건 미충족 - channel 불일치: {channel_id} != {EXPENSE_SUBMIT_CHANNEL_ID}")
         return
     if message_ts not in _submitted_messages:
-        logger.info(f"조건 미충족 - message_ts 미추적: {message_ts}")
-        return
+        # 서버 재시작으로 메모리가 초기화됐을 수 있으므로 Sheet Q열에서 복구 시도
+        logger.info(f"message_ts 미추적 — Sheet에서 복구 시도: {message_ts}")
+        try:
+            sheets_svc, _ = get_google_services()
+            recovered = lookup_origin_by_submit_ts(sheets_svc, message_ts)
+        except Exception as e:
+            logger.error(f"Sheet 복구 실패: {e}")
+            recovered = None
 
-    origin_channel, origin_thread_ts = _submitted_messages[message_ts]
+        if not recovered:
+            logger.info(f"조건 미충족 - message_ts 복구 불가: {message_ts}")
+            return
+
+        origin_channel, origin_thread_ts = recovered
+        logger.info(f"Sheet에서 복구 성공: {origin_channel}/{origin_thread_ts}")
+    else:
+        origin_channel, origin_thread_ts = _submitted_messages[message_ts]
 
     client.chat_postMessage(
         channel=origin_channel,
@@ -531,7 +549,14 @@ def _on_reaction_added(event: dict, client: WebClient) -> None:
         text=f"<@{FINANCE_MANAGER_USER_ID}> 해당비용이 입금되면 입금완료 버튼을 클릭해주세요.",
     )
 
-    del _submitted_messages[message_ts]
+    # 리마인더용: 제출 채널 알림 스레드 ts를 Q열에 기록
+    try:
+        sheets_svc, _ = get_google_services()
+        store_submit_channel_ts(sheets_svc, origin_channel, origin_thread_ts, message_ts)
+    except Exception as e:
+        logger.error(f"submit channel ts 기록 실패: {e}")
+
+    _submitted_messages.pop(message_ts, None)
     logger.info(f"은미님 확인 완료 알림 전송: {origin_channel}/{origin_thread_ts}")
 
 
@@ -549,7 +574,6 @@ def _send_final_notification(client: WebClient, context: ProcessingContext) -> "
         f"<@{FINANCE_MANAGER_USER_ID}> 은미님! "
         f"<@{context.user_id}>가 {context.project_name} {year_short}년 {months_str} "
         f"개인카드사용 지출결의서를 제출했습니다.\n\n"
-        f"cc <@{CFO_USER_ID}>\n\n"
         f":page_facing_up: {context.sheets_url}"
     )
 
@@ -559,6 +583,14 @@ def _send_final_notification(client: WebClient, context: ProcessingContext) -> "
     )
     notification_ts = response["ts"]
     _submitted_messages[notification_ts] = (context.channel_id, context.thread_ts)
+
+    # 서버 재시작 후에도 복구할 수 있도록 Sheet Q열에 즉시 기록
+    try:
+        sheets_svc, _ = get_google_services()
+        store_submit_channel_ts(sheets_svc, context.channel_id, context.thread_ts, notification_ts)
+    except Exception as e:
+        logger.error(f"알림TS 즉시 기록 실패: {e}")
+
     logger.info(f"최종 알림 발송 완료: {EXPENSE_SUBMIT_CHANNEL_ID}")
 
     try:

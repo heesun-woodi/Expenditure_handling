@@ -5,6 +5,7 @@ from slack_bolt import App
 from slack_bolt.adapter.flask import SlackRequestHandler
 
 from config import SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET, PORT, LOG_LEVEL
+from handlers.deposit_reminder import start_deposit_reminder_loop
 from handlers.slack_handler import register_handlers
 from utils.logger import setup_logger
 
@@ -29,6 +30,8 @@ def main():
     @flask_app.route("/slack/events", methods=["POST"])
     def slack_events():
         return handler.handle(request)
+
+    start_deposit_reminder_loop()
 
     logger.info(f"HTTP 모드로 시작 (port={PORT})...")
     flask_app.run(host="0.0.0.0", port=PORT)

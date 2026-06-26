@@ -22,6 +22,7 @@ PARENT_FOLDER_ID: str = os.environ.get("PARENT_FOLDER_ID", "")
 # --- Slack User IDs ---
 FINANCE_MANAGER_USER_ID: str = os.environ.get("FINANCE_MANAGER_USER_ID", "")  # @Eunmi Wi
 CFO_USER_ID: str = os.environ.get("CFO_USER_ID", "")  # @Sungyoung Jung
+BOT_ADMIN_USER_ID: str = os.environ.get("BOT_ADMIN_USER_ID", "U05DG0KGDRU")  # 봇 관리자 (토큰 만료 알림 수신)
 
 # --- Sharing: Google 계정 이메일 및 도메인 ---
 PAUL_EMAIL: str = "paul@mfitlab.com"

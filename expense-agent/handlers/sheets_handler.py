@@ -5,6 +5,7 @@ import os
 from datetime import datetime
 from typing import Optional
 
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -58,13 +59,37 @@ def get_google_services():
     creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
 
     if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-        with open(TOKEN_FILE, "w") as f:
-            f.write(creds.to_json())
+        try:
+            creds.refresh(Request())
+            with open(TOKEN_FILE, "w") as f:
+                f.write(creds.to_json())
+        except RefreshError:
+            _notify_token_expired()
+            raise
 
     sheets_service = build("sheets", "v4", credentials=creds)
     drive_service = build("drive", "v3", credentials=creds)
     return sheets_service, drive_service
+
+
+def _notify_token_expired():
+    """Google OAuth 토큰 만료 시 봇 관리자에게 Slack DM 발송"""
+    try:
+        from slack_sdk import WebClient
+        from config import SLACK_BOT_TOKEN, BOT_ADMIN_USER_ID
+        client = WebClient(token=SLACK_BOT_TOKEN)
+        client.chat_postMessage(
+            channel=BOT_ADMIN_USER_ID,
+            text=(
+                ":warning: *Google OAuth 토큰이 만료되었습니다.*\n\n"
+                "지출결의서 봇이 Google Sheets/Drive에 접근할 수 없습니다.\n\n"
+                "*Claude Code에서 아래 스킬을 즉시 실행해주세요:*\n"
+                "`/renew-google-token`"
+            ),
+        )
+        logger.info("토큰 만료 알림 발송 완료")
+    except Exception as e:
+        logger.error(f"토큰 만료 알림 발송 실패: {e}")
 
 
 def copy_template(
@@ -88,30 +113,62 @@ def copy_template(
     return spreadsheet_id
 
 
+def get_or_create_quarter_folder(drive_service, year: int, month: int, parent_folder_id: str) -> str:
+    """작성 일자 기준 분기 서브폴더를 조회하거나 없으면 생성. 폴더 ID 반환.
+
+    폴더명 규칙: {연도2자리}_{분기}분기 (예: 26_2분기)
+    """
+    year_short = year % 100
+    quarter = (month - 1) // 3 + 1
+    folder_name = f"{year_short}_{quarter}분기"
+
+    query = (
+        f"'{parent_folder_id}' in parents and trashed = false "
+        f"and mimeType = 'application/vnd.google-apps.folder' "
+        f"and name = '{folder_name}'"
+    )
+    result = drive_service.files().list(q=query, fields="files(id)").execute()
+    files = result.get("files", [])
+    if files:
+        logger.info(f"기존 분기 폴더 사용: {folder_name} ({files[0]['id']})")
+        return files[0]["id"]
+
+    folder = drive_service.files().create(
+        body={
+            "name": folder_name,
+            "mimeType": "application/vnd.google-apps.folder",
+            "parents": [parent_folder_id],
+        },
+        fields="id",
+    ).execute()
+    logger.info(f"분기 폴더 생성: {folder_name} ({folder['id']})")
+    return folder["id"]
+
+
 def get_next_doc_number(drive_service, user_display_name: str) -> str:
     """
-    Google Drive 폴더에서 같은 사용자의 기존 지출결의서 수를 카운트하여 문서번호 생성
+    Google Drive에서 같은 사용자의 기존 지출결의서 수를 카운트하여 문서번호 생성
 
     형식: "연-닉네임-순번" (예: "26-woodi-1")
+    분기 서브폴더에 저장된 파일도 포함하기 위해 parent 제한 없이 검색
     """
     year_short = datetime.now().year % 100
     nickname = user_display_name.lower()
 
     count = 0
-    if PARENT_FOLDER_ID:
-        try:
-            query = (
-                f"'{PARENT_FOLDER_ID}' in parents and trashed = false "
-                f"and name contains '개인카드지출결의서_{user_display_name}'"
-            )
-            result = drive_service.files().list(
-                q=query,
-                fields="files(id)",
-                pageSize=1000,
-            ).execute()
-            count = len(result.get("files", []))
-        except Exception as e:
-            logger.error(f"Drive 파일 카운트 실패: {e}")
+    try:
+        query = (
+            f"trashed = false "
+            f"and name contains '개인카드지출결의서_{user_display_name}'"
+        )
+        result = drive_service.files().list(
+            q=query,
+            fields="files(id)",
+            pageSize=1000,
+        ).execute()
+        count = len(result.get("files", []))
+    except Exception as e:
+        logger.error(f"Drive 파일 카운트 실패: {e}")
 
     seq = count + 1
     return f"{year_short}-{nickname}-{seq}"
@@ -609,11 +666,13 @@ def append_to_project_cost_sheet(
             thread_ts,                         # M: slack_thread_ts
             user_id,                           # N: slack_user_id
             "",                                # O: 알림발송
+            "",                                # P: 리마인더발송일
+            "",                                # Q: 알림스레드TS
         ])
 
     sheets_service.spreadsheets().values().append(
         spreadsheetId=PROJECT_COST_SPREADSHEET_ID,
-        range="A1:O1",
+        range="A1:Q1",
         valueInputOption="RAW",
         insertDataOption="INSERT_ROWS",
         body={"values": rows},
@@ -929,3 +988,127 @@ def _get_sheet_id(sheets_service, spreadsheet_id: str, sheet_name: str) -> Optio
     except Exception as e:
         logger.error(f"시트 ID 조회 실패: {e}")
     return None
+
+
+def store_submit_channel_ts(
+    sheets_service, channel_id: str, thread_ts: str, submit_message_ts: str
+) -> None:
+    """입금완료 버튼이 달린 제출 채널 메시지 ts를 Q열에 기록"""
+    try:
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=PROJECT_COST_SPREADSHEET_ID,
+            range="A2:Q",
+        ).execute()
+        rows = result.get("values", [])
+
+        ts_int = thread_ts.split(".")[0]
+        update_requests = []
+
+        for row_index, row in enumerate(rows):
+            row_channel_id = row[11].strip() if len(row) > 11 else ""
+            row_thread_ts = row[12].strip() if len(row) > 12 else ""
+            if row_channel_id == channel_id and (
+                row_thread_ts == thread_ts or row_thread_ts == ts_int
+            ):
+                sheet_row = row_index + 2
+                update_requests.append(
+                    {"range": f"Q{sheet_row}", "values": [[submit_message_ts]]}
+                )
+
+        if update_requests:
+            sheets_service.spreadsheets().values().batchUpdate(
+                spreadsheetId=PROJECT_COST_SPREADSHEET_ID,
+                body={"valueInputOption": "RAW", "data": update_requests},
+            ).execute()
+            logger.info(f"알림스레드TS 기록 완료: {len(update_requests)}건")
+        else:
+            logger.warning(
+                f"알림스레드TS 기록 대상 행 없음: channel={channel_id}, thread={thread_ts}"
+            )
+    except Exception as e:
+        logger.error(f"알림스레드TS 기록 실패: {e}")
+
+
+def lookup_origin_by_submit_ts(
+    sheets_service, submit_message_ts: str
+) -> "tuple[str, str] | None":
+    """Q열(submit_message_ts)로 origin_channel, origin_thread_ts 역조회.
+    서버 재시작 후 _submitted_messages가 비어 있을 때 복구용."""
+    try:
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=PROJECT_COST_SPREADSHEET_ID,
+            range="A2:Q",
+        ).execute()
+        rows = result.get("values", [])
+        for row in rows:
+            row_submit_ts = row[16].strip() if len(row) > 16 else ""
+            if row_submit_ts == submit_message_ts:
+                channel_id = row[11].strip() if len(row) > 11 else ""
+                thread_ts = row[12].strip() if len(row) > 12 else ""
+                if channel_id and thread_ts:
+                    return channel_id, thread_ts
+    except Exception as e:
+        logger.error(f"submit_message_ts 역조회 실패: {e}")
+    return None
+
+
+def get_pending_deposits(sheets_service) -> list[dict]:
+    """입금 대기 중인 건 목록 반환 (J열 있고 K열 비어있는 행, thread 기준 그룹핑)"""
+    result = sheets_service.spreadsheets().values().get(
+        spreadsheetId=PROJECT_COST_SPREADSHEET_ID,
+        range="A2:Q",
+    ).execute()
+    rows = result.get("values", [])
+
+    grouped: dict[tuple[str, str], dict] = {}
+
+    for row_index, row in enumerate(rows):
+        confirmation_date = row[9].strip() if len(row) > 9 else ""
+        deposit_date = row[10].strip() if len(row) > 10 else ""
+
+        if not confirmation_date or deposit_date:
+            continue
+
+        channel_id = row[11].strip() if len(row) > 11 else ""
+        thread_ts = row[12].strip() if len(row) > 12 else ""
+        last_reminder = row[15].strip() if len(row) > 15 else ""
+        submit_message_ts = row[16].strip() if len(row) > 16 else ""
+
+        if not channel_id or not thread_ts:
+            continue
+
+        key = (channel_id, thread_ts)
+        if key not in grouped:
+            grouped[key] = {
+                "channel_id": channel_id,
+                "thread_ts": thread_ts,
+                "confirmation_date": confirmation_date,
+                "last_reminder_date": last_reminder,
+                "submit_message_ts": submit_message_ts,
+                "row_indices": [],
+            }
+        grouped[key]["row_indices"].append(row_index + 2)
+        # 가장 최근 리마인더 날짜 사용
+        if last_reminder and (
+            not grouped[key]["last_reminder_date"]
+            or last_reminder > grouped[key]["last_reminder_date"]
+        ):
+            grouped[key]["last_reminder_date"] = last_reminder
+        # submit_message_ts가 있으면 채택
+        if submit_message_ts and not grouped[key]["submit_message_ts"]:
+            grouped[key]["submit_message_ts"] = submit_message_ts
+
+    return list(grouped.values())
+
+
+def update_reminder_dates(sheets_service, row_indices: list[int]) -> None:
+    """리마인더 발송일(P열)을 오늘 날짜로 업데이트"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    update_requests = [
+        {"range": f"P{row}", "values": [[today]]} for row in row_indices
+    ]
+    sheets_service.spreadsheets().values().batchUpdate(
+        spreadsheetId=PROJECT_COST_SPREADSHEET_ID,
+        body={"valueInputOption": "RAW", "data": update_requests},
+    ).execute()
+    logger.info(f"리마인더 발송일 기록 완료: {len(row_indices)}건 ({today})")
