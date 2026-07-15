@@ -12,7 +12,7 @@ PORT: int = int(os.environ.get("PORT", "3000"))
 
 # --- Anthropic ---
 ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "")
-CLAUDE_MODEL: str = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-5-20250929")
+CLAUDE_MODEL: str = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5")
 
 # --- Google ---
 GOOGLE_APPLICATION_CREDENTIALS: str = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
